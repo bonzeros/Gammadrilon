@@ -752,7 +752,11 @@ class MainWindow(QMainWindow):
         title.setObjectName("AppTitle")
         title.setAlignment(Qt.AlignCenter)
 
-        subtitle = QLabel("Digital gamma controller")
+        self.version_label = QLabel("v1.0.1")
+        self.version_label.setObjectName("Version")
+        self.version_label.setAlignment(Qt.AlignCenter)
+
+        subtitle = QLabel("")
         subtitle.setObjectName("Subtitle")
         subtitle.setAlignment(Qt.AlignCenter)
 
@@ -762,6 +766,7 @@ class MainWindow(QMainWindow):
 
         header_layout.addWidget(self.icon_label)
         header_layout.addWidget(title)
+        header_layout.addWidget(self.version_label)
         header_layout.addWidget(subtitle)
         header_layout.addWidget(self.status_label)
 
@@ -1563,6 +1568,13 @@ QWidget#Root {
     color: #F0E6D2;
     font-family: Inter, Roboto, Segoe UI, Arial;
     font-size: 13px;
+}
+
+QLabel#Version {
+    color: #8C8270;
+    font-size: 10px;
+    font-weight: 600;
+    margin-top: -2px;
 }
 
 QDialog {
