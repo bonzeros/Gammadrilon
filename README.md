@@ -1,6 +1,12 @@
 <h1 align="center">Gammadrilon</h1>
 
 <p align="center">
+  <a href="https://github.com/bonzeros/Gammadrilon/releases/latest">
+    <img src="https://img.shields.io/badge/Download%20EXE-latest-blue?style=for-the-badge" alt="Download.EXE">
+  </a>
+</p>
+
+<p align="center">
   <b>desktop-приложение для управления яркостью экрана</b><br>
   Простая настройка, пресеты.
 </p>
@@ -22,6 +28,10 @@
 **Gammadrilon**
 
 Позволяет управлять гаммой, яркостью, контрастом и цветовой температурой экрана. Приложение работает через Windows Gamma API и имеет поддержку пресетов, глобальных горячих клавиш, трей-режима и плавных переходов между настройками.
+
+## Скачать EXE
+
+[Скачать последнюю версию](https://github.com/bonzeros/Gammadrilon/releases/latest)
 
 ## Установка
 
