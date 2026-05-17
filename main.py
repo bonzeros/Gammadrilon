@@ -4,6 +4,8 @@ import math
 import os
 import sys
 import time
+import subprocess
+import winreg
 from ctypes import wintypes
 from pathlib import Path
 
@@ -156,6 +158,7 @@ def kelvin_to_rgb_multipliers(kelvin: int) -> tuple[float, float, float]:
 
 DEFAULT_CONFIG = {
     "settings": {
+        "start_with_windows": False,
         "close_on_x": False,
         "current": {
             "brightness": 1.0,
@@ -224,6 +227,7 @@ def load_config() -> dict:
     data.setdefault("presets", [])
 
     data["settings"].setdefault("close_on_x", False)
+    data["settings"].setdefault("start_with_windows", False)
 
     data["settings"].setdefault(
         "current",
@@ -265,6 +269,30 @@ def load_config() -> dict:
     save_config(data)
     return data
 
+def get_startup_shortcut_path() -> Path:
+    startup_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    return startup_dir / f"{APP_NAME}.bat"
+
+
+def enable_startup():
+    bat_path = get_startup_shortcut_path()
+    target = sys.executable if getattr(sys, "frozen", False) else sys.executable
+
+    script_path = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
+
+    if getattr(sys, "frozen", False):
+        command = f'"""{target}"""'
+    else:
+        command = f'"""{target}""" "{script_path}"'
+
+    content = f'@echo off\nstart "" {command}\n'
+    bat_path.write_text(content, encoding="utf-8")
+
+
+def disable_startup():
+    bat_path = get_startup_shortcut_path()
+    if bat_path.exists():
+        bat_path.unlink()
 
 class GammaController:
     def __init__(self):
@@ -597,6 +625,24 @@ class MainWindow(QMainWindow):
             save=False,
         )
 
+        
+
+        def on_start_with_windows_changed(self, state):
+            enabled = state == Qt.Checked
+            self.config["settings"]["start_with_windows"] = enabled
+            save_config(self.config)
+
+            try:
+                if enabled:
+                    enable_startup()
+                    self.set_status("Автозапуск: включён")
+                else:
+                    disable_startup()
+                    self.set_status("Автозапуск: выключен")
+            except Exception as e:
+                QMessageBox.warning(self, "Startup error", str(e))
+
+                
     def animate_window_geometry(self, target_width: int, duration_ms: int = 260):
         start_geometry = self.geometry()
         end_geometry = self.geometry()
@@ -910,13 +956,25 @@ class MainWindow(QMainWindow):
         advanced_layout.addWidget(self.contrast_row)
         advanced_layout.addWidget(self.temperature_row)
 
+        checkbox_row = QHBoxLayout()
+        checkbox_row.setSpacing(16)
+
         self.close_on_x_checkbox = QCheckBox("Не скрывать в трей")
         self.close_on_x_checkbox.setChecked(
             bool(self.config.get("settings", {}).get("close_on_x", False))
         )
         self.close_on_x_checkbox.stateChanged.connect(self.on_close_on_x_changed)
 
-        advanced_layout.addWidget(self.close_on_x_checkbox)
+        self.start_with_windows_checkbox = QCheckBox("Запускать вместе с Windows")
+        self.start_with_windows_checkbox.setChecked(
+            bool(self.config.get("settings", {}).get("start_with_windows", False))
+        )
+        self.start_with_windows_checkbox.stateChanged.connect(self.on_start_with_windows_changed)
+
+        checkbox_row.addWidget(self.close_on_x_checkbox)
+        checkbox_row.addWidget(self.start_with_windows_checkbox)
+
+        advanced_layout.addLayout(checkbox_row)
 
         advanced_layout.addWidget(self.curve)
         advanced_layout.addStretch()
@@ -1749,6 +1807,12 @@ def main():
     window = MainWindow()
     window.show()
 
+    if window.config.get("settings", {}).get("start_with_windows", False):
+        try:
+            enable_startup()
+        except Exception:
+            pass
+        
     code = app.exec_()
 
     try:
