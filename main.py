@@ -624,25 +624,7 @@ class MainWindow(QMainWindow):
             apply_now=True,
             save=False,
         )
-
-        
-
-        def on_start_with_windows_changed(self, state):
-            enabled = state == Qt.Checked
-            self.config["settings"]["start_with_windows"] = enabled
-            save_config(self.config)
-
-            try:
-                if enabled:
-                    enable_startup()
-                    self.set_status("Автозапуск: включён")
-                else:
-                    disable_startup()
-                    self.set_status("Автозапуск: выключен")
-            except Exception as e:
-                QMessageBox.warning(self, "Startup error", str(e))
-
-                
+              
     def animate_window_geometry(self, target_width: int, duration_ms: int = 260):
         start_geometry = self.geometry()
         end_geometry = self.geometry()
@@ -965,7 +947,7 @@ class MainWindow(QMainWindow):
         )
         self.close_on_x_checkbox.stateChanged.connect(self.on_close_on_x_changed)
 
-        self.start_with_windows_checkbox = QCheckBox("Запускать вместе с Windows")
+        self.start_with_windows_checkbox = QCheckBox("Автозапуск")
         self.start_with_windows_checkbox.setChecked(
             bool(self.config.get("settings", {}).get("start_with_windows", False))
         )
@@ -1529,6 +1511,21 @@ class MainWindow(QMainWindow):
             self.set_status("Крестик: закрытие приложения")
         else:
             self.set_status("Крестик: скрытие в трей")
+
+    def on_start_with_windows_changed(self, state):
+        enabled = state == Qt.Checked
+        self.config["settings"]["start_with_windows"] = enabled
+        save_config(self.config)
+
+        try:
+            if enabled:
+                enable_startup()
+                self.set_status("Автозапуск включён")
+            else:
+                disable_startup()
+                self.set_status("Автозапуск выключен")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка автозапуска", str(e))
 
     def closeEvent(self, event):
         if self.is_quitting:
