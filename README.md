@@ -32,10 +32,3 @@
 ## Скачать EXE
 
 [Скачать последнюю версию](https://github.com/bonzeros/Gammadrilon/releases/latest)
-
-## Установка
-
-```bash
-git clone https://github.com/your-username/gammadrilon.git
-cd gammadrilon
-pip install -r requirements.txt
