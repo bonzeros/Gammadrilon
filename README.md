@@ -1,23 +1,31 @@
 <h1 align="center">Gammadrilon</h1>
 
 <p align="center">
-  Современное desktop-приложение с удобным интерфейсом и поддержкой пресетов.
+  <b>desktop-приложение для управления яркостью экрана</b><br>
+  Простая настройка, пресеты.
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Screenshot" width="800">
+
+
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
+<img width="906" height="695" alt="{39721F2B-CDE0-4E96-B69F-0E221DF3B8F4}" src="https://github.com/user-attachments/assets/978d1273-bf42-4206-9819-6b6f2c373f2c" />
+
 </p>
 
-## Возможности
+---
 
-- Удобный современный интерфейс
-- Поддержка пресетов
-- Сохранение настроек
-- Работа в трее
-- Сборка в `.exe`
+## О проекте
+
+**Gammadrilon** — это desktop-приложение с удобным интерфейсом, поддержкой пресетов.
+
+Проект ориентирован на простой запуск, приятный внешний вид и удобную работу без лишних действий.
+
+## Установка
+
+```bash
+git clone https://github.com/your-username/gammadrilon.git
+cd gammadrilon
+pip install -r requirements.txt
