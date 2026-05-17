@@ -1,0 +1,46 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Build folders
+build/
+dist/
+out/
+
+# PyInstaller
+*.spec
+
+# Logs
+*.log
+
+# User/local config
+presets.json
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.old
+
+# Installer artifacts
+*.msi
+*.zip
+*.7z
+*.rar

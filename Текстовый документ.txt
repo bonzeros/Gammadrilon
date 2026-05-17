@@ -1,0 +1,1763 @@
+import ctypes
+import json
+import math
+import os
+import sys
+import time
+from ctypes import wintypes
+from pathlib import Path
+
+import keyboard
+
+
+from PyQt5.QtCore import (
+    Qt,
+    QObject,
+    QTimer,
+    QSize,
+    pyqtSignal,
+    QPropertyAnimation,
+    QEasingCurve,
+    QUrl,
+)
+from PyQt5.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
+from PyQt5.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QCheckBox,
+    QDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+    QInputDialog,
+)
+
+
+APP_NAME = "Gammadrilon"
+CONFIG_FILE = "presets.json"
+ICON_FILE = "icon.ico"
+
+# Рублей бы.
+SUPPORT_URL = "https://boosty.to/bonzeros/donate"
+SECOND_URL = "https://boosty.to/bonzeros/donate"
+
+def is_another_instance_running():
+    mutex_name = f"Global\\{APP_NAME}_mutex"
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+
+    if kernel32.GetLastError() == 183:
+        return True
+
+    return False
+
+
+def app_dir() -> Path:
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    return Path(__file__).resolve().parent
+
+
+def resource_path(relative: str) -> Path:
+    """
+    Путь к ресурсам внутри PyInstaller onefile.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative
+
+    return app_dir() / relative
+
+
+def config_path() -> Path:
+    return app_dir() / CONFIG_FILE
+
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+def compute_gamma_ramp(brightness: float, contrast: float) -> list[list[int]]:
+
+    ramp = []
+
+    for i in range(256):
+        x = i / 255.0
+
+        # Контраст относительно 0.5
+        x = 0.5 + (x - 0.5) * contrast
+
+        # Яркость
+        x = x * brightness
+
+        # Клип
+        x = max(0.0, min(1.0, x))
+
+        value = int(x * 65535)
+        ramp.append(value)
+
+    return [ramp, ramp, ramp]
+
+
+def kelvin_to_rgb_multipliers(kelvin: int) -> tuple[float, float, float]:
+
+    kelvin = int(clamp(kelvin, 3000, 10000))
+    temp = kelvin / 100.0
+
+    if temp <= 66:
+        red = 255
+    else:
+        red = temp - 60
+        red = 329.698727446 * (red ** -0.1332047592)
+        red = clamp(red, 0, 255)
+
+    if temp <= 66:
+        green = 99.4708025861 * math.log(temp) - 161.1195681661
+        green = clamp(green, 0, 255)
+    else:
+        green = temp - 60
+        green = 288.1221695283 * (green ** -0.0755148492)
+        green = clamp(green, 0, 255)
+
+    if temp >= 66:
+        blue = 255
+    elif temp <= 19:
+        blue = 0
+    else:
+        blue = temp - 10
+        blue = 138.5177312231 * math.log(blue) - 305.0447927307
+        blue = clamp(blue, 0, 255)
+
+    return red / 255.0, green / 255.0, blue / 255.0
+
+
+DEFAULT_CONFIG = {
+    "settings": {
+        "close_on_x": False,
+        "current": {
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0,
+            "temperature": 6500,
+        },
+        "hotkeys": {
+            "next_preset": "page up",
+            "prev_preset": "page down",
+            "reset": "ctrl+alt+z",
+            "cat_vision": "scroll lock",
+        },
+    },
+    "presets": [
+        {
+            "name": "Normal",
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0,
+            "temperature": 6500,
+            "hotkey": "",
+        },
+        {
+            "name": "Warm Night",
+            "brightness": 0.75,
+            "contrast": 0.85,
+            "gamma": 1.08,
+            "temperature": 4500,
+            "hotkey": "",
+        },
+        {
+            "name": "Bright Game",
+            "brightness": 1.35,
+            "contrast": 1.05,
+            "gamma": 1.0,
+            "temperature": 6500,
+            "hotkey": "",
+        },
+    ],
+}
+
+
+def save_config(data: dict) -> None:
+    with config_path().open("w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4, ensure_ascii=False)
+
+
+def load_config() -> dict:
+    path = config_path()
+
+    if not path.exists():
+        data = json.loads(json.dumps(DEFAULT_CONFIG))
+        save_config(data)
+        return data
+
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except Exception:
+        data = json.loads(json.dumps(DEFAULT_CONFIG))
+        save_config(data)
+        return data
+
+    data.setdefault("settings", {})
+    data.setdefault("presets", [])
+
+    data["settings"].setdefault("close_on_x", False)
+
+    data["settings"].setdefault(
+        "current",
+        json.loads(json.dumps(DEFAULT_CONFIG["settings"]["current"])),
+    )
+    data["settings"].setdefault(
+        "hotkeys",
+        json.loads(json.dumps(DEFAULT_CONFIG["settings"]["hotkeys"])),
+    )
+
+    for key, value in DEFAULT_CONFIG["settings"]["current"].items():
+        data["settings"]["current"].setdefault(key, value)
+
+    for key, value in DEFAULT_CONFIG["settings"]["hotkeys"].items():
+        data["settings"]["hotkeys"].setdefault(key, value)
+
+    if not data["presets"]:
+        data["presets"] = json.loads(json.dumps(DEFAULT_CONFIG["presets"]))
+
+    for preset in data["presets"]:
+        preset.setdefault("name", "Unnamed")
+        preset.setdefault("brightness", 1.0)
+        preset.setdefault("contrast", 1.0)
+        preset.setdefault("gamma", 1.0)
+        preset.setdefault("temperature", 6500)
+        preset.setdefault("hotkey", "")
+
+        preset["brightness"] = clamp(float(preset["brightness"]), 0.5, 2.0)
+        preset["contrast"] = clamp(float(preset["contrast"]), 0.3, 2.0)
+        preset["gamma"] = clamp(float(preset["gamma"]), 0.5, 2.5)
+        preset["temperature"] = int(clamp(int(preset["temperature"]), 3000, 10000))
+
+    current = data["settings"]["current"]
+    current["brightness"] = clamp(float(current.get("brightness", 1.0)), 0.5, 2.0)
+    current["contrast"] = clamp(float(current.get("contrast", 1.0)), 0.3, 2.0)
+    current["gamma"] = clamp(float(current.get("gamma", 1.0)), 0.5, 2.5)
+    current["temperature"] = int(clamp(int(current.get("temperature", 6500)), 3000, 10000))
+
+    save_config(data)
+    return data
+
+
+class GammaController:
+    def __init__(self):
+        self.user32 = ctypes.windll.user32
+        self.gdi32 = ctypes.windll.gdi32
+
+        self.user32.GetDC.argtypes = [wintypes.HWND]
+        self.user32.GetDC.restype = wintypes.HDC
+
+        self.user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        self.user32.ReleaseDC.restype = ctypes.c_int
+
+        self.gdi32.SetDeviceGammaRamp.argtypes = [wintypes.HDC, ctypes.c_void_p]
+        self.gdi32.SetDeviceGammaRamp.restype = wintypes.BOOL
+
+    def build_ramp(
+        self,
+        brightness: float,
+        contrast: float,
+        gamma: float = 1.0,
+        temperature: int = 6500,
+    ) -> tuple[list[int], list[int], list[int]]:
+        brightness = clamp(brightness, 0.5, 2.0)
+        contrast = clamp(contrast, 0.3, 2.0)
+        gamma = clamp(gamma, 0.5, 2.5)
+        temperature = int(clamp(temperature, 3000, 10000))
+
+        red_multiplier, green_multiplier, blue_multiplier = kelvin_to_rgb_multipliers(temperature)
+
+        red = []
+        green = []
+        blue = []
+
+        for i in range(256):
+            x = i / 255.0
+
+            # 1) Контраст вокруг 0.5
+            x = 0.5 + (x - 0.5) * contrast
+
+            # 2) Яркость
+            x = x * brightness
+
+            # 3) Гамма — обрабатываем отрицательные значения корректно
+            if x <= 0.0:
+                x = 0.0
+            else:
+                # гамма работает только на положительной части,
+                # верхнюю часть НЕ клипуем здесь, чтобы яркость
+                # реально влияла после умножения на температуру
+                x = x ** (1.0 / gamma)
+
+            # 4) Температура — каждый канал отдельно
+            r_val = x * red_multiplier
+            g_val = x * green_multiplier
+            b_val = x * blue_multiplier
+
+            # 5) Финальный клип — только сейчас
+            r = int(clamp(r_val, 0.0, 1.0) * 65535)
+            g = int(clamp(g_val, 0.0, 1.0) * 65535)
+            b = int(clamp(b_val, 0.0, 1.0) * 65535)
+
+            red.append(r)
+            green.append(g)
+            blue.append(b)
+
+        return red, green, blue
+
+    def apply(
+        self,
+        brightness: float,
+        contrast: float,
+        gamma: float = 1.0,
+        temperature: int = 6500,
+    ) -> bool:
+        red, green, blue = self.build_ramp(brightness, contrast, gamma, temperature)
+
+        gamma_array_type = ctypes.c_ushort * (3 * 256)
+        gamma_array = gamma_array_type()
+
+        for i in range(256):
+            gamma_array[i] = red[i]
+            gamma_array[256 + i] = green[i]
+            gamma_array[512 + i] = blue[i]
+
+        hdc = self.user32.GetDC(None)
+
+        if not hdc:
+            return False
+
+        try:
+            result = self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(gamma_array))
+            return bool(result)
+        finally:
+            self.user32.ReleaseDC(None, hdc)
+
+    def reset(self) -> bool:
+        return self.apply(1.0, 1.0, 1.0, 6500)
+
+
+class HotkeyManager(QObject):
+    nextPreset = pyqtSignal()
+    prevPreset = pyqtSignal()
+    resetRequested = pyqtSignal()
+    catVisionRequested = pyqtSignal()
+    presetRequested = pyqtSignal(int)
+    error = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.handles = []
+
+    def clear(self):
+        for handle in self.handles:
+            try:
+                keyboard.remove_hotkey(handle)
+            except Exception:
+                pass
+
+        self.handles.clear()
+
+    def register(self, config: dict):
+        self.clear()
+
+        hotkeys = config.get("settings", {}).get("hotkeys", {})
+        presets = config.get("presets", [])
+
+        def safe_add(hotkey: str, callback):
+            hotkey = str(hotkey).strip()
+
+            if not hotkey:
+                return
+
+            try:
+                handle = keyboard.add_hotkey(hotkey, callback, suppress=False)
+                self.handles.append(handle)
+            except Exception as error:
+                self.error.emit(f"Hotkey error: {hotkey} — {error}")
+
+        safe_add(hotkeys.get("next_preset", "page up"), lambda: self.nextPreset.emit())
+        safe_add(hotkeys.get("prev_preset", "page down"), lambda: self.prevPreset.emit())
+        safe_add(hotkeys.get("reset", "ctrl+alt+z"), lambda: self.resetRequested.emit())
+        safe_add(hotkeys.get("cat_vision", "scroll lock"), lambda: self.catVisionRequested.emit())
+
+        for index, preset in enumerate(presets):
+            preset_hotkey = str(preset.get("hotkey", "")).strip()
+
+            if preset_hotkey:
+                safe_add(preset_hotkey, lambda i=index: self.presetRequested.emit(i))
+
+
+class CurveWidget(QWidget):
+    def __init__(self, gamma_controller: GammaController):
+        super().__init__()
+
+        self.gamma_controller = gamma_controller
+        self.brightness = 1.0
+        self.contrast = 1.0
+        self.gamma = 1.0
+        self.temperature = 6500
+
+        self.setMinimumHeight(135)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_values(self, brightness: float, contrast: float, gamma: float, temperature: int):
+        self.brightness = brightness
+        self.contrast = contrast
+        self.gamma = gamma
+        self.temperature = temperature
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(12, 12, -12, -12)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#0A0A0A"))  # было #15110A
+        painter.drawRoundedRect(rect, 16, 16)
+
+        painter.setPen(QPen(QColor(232, 213, 183, 35), 1))
+
+        for i in range(1, 4):
+            x = rect.left() + rect.width() * i / 4
+            y = rect.top() + rect.height() * i / 4
+            painter.drawLine(int(x), rect.top(), int(x), rect.bottom())
+            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+
+        red, _, _ = self.gamma_controller.build_ramp(
+            self.brightness,
+            self.contrast,
+            self.gamma,
+            self.temperature,
+        )
+
+        path = QPainterPath()
+
+        for i, value in enumerate(red):
+            x = rect.left() + rect.width() * i / 255.0
+            y = rect.bottom() - rect.height() * (value / 65535.0)
+
+            if i == 0:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+
+        pen = QPen(QColor("#E8D5B7"), 3)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawPath(path)
+
+
+class HotkeySettingsDialog(QDialog):
+    def __init__(self, hotkeys: dict, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Global Hotkeys")
+        self.setModal(True)
+        self.setMinimumWidth(430)
+
+        self.inputs = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(14)
+
+        title = QLabel("Global Hotkeys")
+        title.setObjectName("DialogTitle")
+        root.addWidget(title)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        root.addLayout(form)
+
+        items = [
+            ("next_preset", "Next preset"),
+            ("prev_preset", "Previous preset"),
+            ("reset", "Emergency reset"),
+            ("cat_vision", "Cat Vision"),
+        ]
+
+        for row, (key, label_text) in enumerate(items):
+            label = QLabel(label_text)
+            edit = QLineEdit(hotkeys.get(key, ""))
+            edit.setPlaceholderText("example: ctrl+alt+1")
+
+            self.inputs[key] = edit
+
+            form.addWidget(label, row, 0)
+            form.addWidget(edit, row, 1)
+
+        hint = QLabel(
+            "Examples: page up, page down, scroll lock, ctrl+alt+z, ctrl+shift+1."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+
+        cancel_button = QPushButton("CANCEL")
+        save_button = QPushButton("SAVE")
+        save_button.setObjectName("PrimaryButton")
+
+        cancel_button.clicked.connect(self.reject)
+        save_button.clicked.connect(self.accept)
+
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(save_button)
+        root.addLayout(buttons)
+
+        self.setStyleSheet(APP_STYLESHEET)
+
+    def result_hotkeys(self) -> dict:
+        return {key: edit.text().strip() for key, edit in self.inputs.items()}
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.config = load_config()
+        self.gamma_controller = GammaController()
+        self.hotkey_manager = HotkeyManager()
+
+        self.current_preset_index = 0
+        self.is_quitting = False
+
+        self.compact_size = QSize(520, 700)
+        self.expanded_size = QSize(910, 700)
+
+        self.advanced_open = False
+        self.advanced_width = 350
+        self.advanced_animation = None
+
+        self.cat_active = False
+        self.cat_previous_values = None
+
+        self.animation_data = None
+        self.gamma_animation_timer = QTimer(self)
+        self.gamma_animation_timer.timeout.connect(self.animation_step)
+
+        self.cat_timer = QTimer(self)
+        self.cat_timer.setSingleShot(True)
+        self.cat_timer.timeout.connect(self.stop_cat_vision)
+
+        self.setWindowTitle(APP_NAME)
+        self.resize(self.compact_size)
+        self.setMinimumSize(self.compact_size)
+
+        icon_path = resource_path(ICON_FILE)
+
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        self.build_ui()
+        self.build_tray()
+        self.bind_hotkeys()
+
+        current = self.config["settings"]["current"]
+
+        self.set_ui_values(
+            current.get("brightness", 1.0),
+            current.get("contrast", 1.0),
+            current.get("gamma", 1.0),
+            current.get("temperature", 6500),
+            apply_now=True,
+            save=False,
+        )
+
+    def animate_window_geometry(self, target_width: int, duration_ms: int = 260):
+        start_geometry = self.geometry()
+        end_geometry = self.geometry()
+        end_geometry.setWidth(target_width)
+
+        if hasattr(self, "_window_geom_anim") and self._window_geom_anim:
+            self._window_geom_anim.stop()
+
+        self._window_geom_anim = QPropertyAnimation(self, b"geometry")
+        self._window_geom_anim.setDuration(duration_ms)
+        self._window_geom_anim.setStartValue(start_geometry)
+        self._window_geom_anim.setEndValue(end_geometry)
+        self._window_geom_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._window_geom_anim.start()
+
+    def make_card(self) -> tuple[QFrame, QVBoxLayout]:
+        frame = QFrame()
+        frame.setObjectName("Card")
+
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        frame.setGraphicsEffect(shadow)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        return frame, layout
+
+    def make_slider_row(
+        self,
+        title: str,
+        minimum: int,
+        maximum: int,
+        value: int,
+        suffix: str,
+    ) -> tuple[QWidget, QSlider, QLabel]:
+        container = QWidget()
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+
+        label = QLabel(title)
+        label.setObjectName("SliderTitle")
+
+        value_label = QLabel(f"{value}{suffix}")
+        value_label.setObjectName("ValuePill")
+        value_label.setAlignment(Qt.AlignCenter)
+        value_label.setMinimumWidth(78)
+
+        top.addWidget(label)
+        top.addStretch()
+        top.addWidget(value_label)
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(minimum)
+        slider.setMaximum(maximum)
+        slider.setValue(value)
+        slider.setCursor(Qt.PointingHandCursor)
+        slider.setMinimumHeight(34)
+
+        layout.addLayout(top)
+        layout.addWidget(slider)
+
+        return container, slider, value_label
+
+    def tune_button(self, button: QPushButton):
+        button.setMinimumHeight(42)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def build_ui(self):
+        self.setStyleSheet(APP_STYLESHEET)
+
+        central = QWidget()
+        central.setObjectName("Root")
+        self.setCentralWidget(central)
+
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(22, 20, 22, 20)
+        main_layout.setSpacing(16)
+
+        # Left compact panel
+        self.left_panel = QWidget()
+        self.left_panel.setFixedWidth(476)
+
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
+
+        # Header
+        header = QWidget()
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(7)
+        header_layout.setAlignment(Qt.AlignCenter)
+
+        self.icon_label = QLabel()
+        self.icon_label.setAlignment(Qt.AlignCenter)
+
+        icon_path = resource_path(ICON_FILE)
+
+        if icon_path.exists():
+            pixmap = QPixmap(str(icon_path))
+
+            if not pixmap.isNull():
+                self.icon_label.setPixmap(
+                    pixmap.scaled(
+                        86,
+                        86,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                )
+        else:
+            self.icon_label.setText("☀")
+            self.icon_label.setObjectName("FallbackIcon")
+
+        title = QLabel(APP_NAME)
+        title.setObjectName("AppTitle")
+        title.setAlignment(Qt.AlignCenter)
+
+        subtitle = QLabel("Digital gamma controller")
+        subtitle.setObjectName("Subtitle")
+        subtitle.setAlignment(Qt.AlignCenter)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("Status")
+        self.status_label.setAlignment(Qt.AlignCenter)
+
+        header_layout.addWidget(self.icon_label)
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addWidget(self.status_label)
+
+        left_layout.addWidget(header)
+
+        # Main Gamma card
+        gamma_card, gamma_layout = self.make_card()
+
+        self.gamma_row, self.gamma_slider, self.gamma_value = self.make_slider_row(
+            "GAMMA",
+            50,
+            250,
+            100,
+            "%",
+        )
+
+        self.gamma_slider.valueChanged.connect(self.on_slider_changed)
+
+        gamma_layout.addWidget(self.gamma_row)
+
+        gamma_hint = QLabel(
+            "Main control. Brightness, contrast, temperature and curve are inside Advanced."
+        )
+        gamma_hint.setObjectName("Hint")
+        gamma_hint.setWordWrap(True)
+        gamma_layout.addWidget(gamma_hint)
+
+        left_layout.addWidget(gamma_card)
+
+        # Presets card
+        presets_card, presets_layout = self.make_card()
+
+        presets_title = QLabel("PRESETS")
+        presets_title.setObjectName("SectionTitle")
+        presets_layout.addWidget(presets_title)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumHeight(42)
+        self.preset_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.refresh_preset_combo()
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_selected)
+
+        presets_layout.addWidget(self.preset_combo)
+
+        buttons = QGridLayout()
+        buttons.setHorizontalSpacing(10)
+        buttons.setVerticalSpacing(10)
+
+        for row in range(3):
+            buttons.setRowMinimumHeight(row, 42)
+
+        self.save_button = QPushButton("SAVE AS PRESET")
+        self.save_button.setObjectName("PrimaryButton")
+
+        self.delete_button = QPushButton("DELETE PRESET")
+        self.reset_button = QPushButton("RESET")
+        self.cat_button = QPushButton("CAT VISION")
+        self.preset_hotkey_button = QPushButton("SET PRESET HOTKEY")
+        self.global_hotkeys_button = QPushButton("GLOBAL HOTKEYS")
+
+        for button in (
+            self.save_button,
+            self.delete_button,
+            self.reset_button,
+            self.cat_button,
+            self.preset_hotkey_button,
+            self.global_hotkeys_button,
+        ):
+            self.tune_button(button)
+
+        self.save_button.clicked.connect(self.save_as_preset)
+        self.delete_button.clicked.connect(self.delete_current_preset)
+        self.reset_button.clicked.connect(self.reset_all)
+        self.cat_button.clicked.connect(self.toggle_cat_vision)
+        self.preset_hotkey_button.clicked.connect(self.set_current_preset_hotkey)
+        self.global_hotkeys_button.clicked.connect(self.edit_global_hotkeys)
+
+        buttons.addWidget(self.save_button, 0, 0)
+        buttons.addWidget(self.delete_button, 0, 1)
+        buttons.addWidget(self.reset_button, 1, 0)
+        buttons.addWidget(self.cat_button, 1, 1)
+        buttons.addWidget(self.preset_hotkey_button, 2, 0)
+        buttons.addWidget(self.global_hotkeys_button, 2, 1)
+
+        presets_layout.addLayout(buttons)
+
+        hint = QLabel(
+            "PgUp / PgDn — carousel. Ctrl+Alt+Z — emergency reset. "
+            "ScrollLock — Cat Vision toggle."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        presets_layout.addWidget(hint)
+
+        left_layout.addWidget(presets_card)
+
+        self.advanced_button = QPushButton("ADVANCED")
+        self.advanced_button.setObjectName("FlatButton")
+        self.advanced_button.setMinimumHeight(40)
+        self.advanced_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.advanced_button.clicked.connect(self.toggle_advanced)
+
+        left_layout.addWidget(self.advanced_button)
+
+
+        left_layout.addStretch()
+
+        main_layout.addWidget(self.left_panel)
+
+        # Right Advanced panel
+        self.advanced_panel = QWidget()
+        self.advanced_panel.setMaximumWidth(0)
+        self.advanced_panel.setMinimumWidth(0)
+        self.advanced_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+
+        advanced_outer_layout = QVBoxLayout(self.advanced_panel)
+        advanced_outer_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_outer_layout.setSpacing(0)
+
+        advanced_card, advanced_layout = self.make_card()
+
+        adv_title = QLabel("ADVANCED")
+        adv_title.setObjectName("SectionTitle")
+
+        advanced_layout.addWidget(adv_title)
+
+        self.brightness_row, self.brightness_slider, self.brightness_value = self.make_slider_row(
+            "BRIGHTNESS",
+            50,
+            200,
+            100,
+            "%",
+        )
+
+        self.contrast_row, self.contrast_slider, self.contrast_value = self.make_slider_row(
+            "CONTRAST",
+            30,
+            200,
+            100,
+            "%",
+        )
+
+        self.temperature_row, self.temperature_slider, self.temperature_value = self.make_slider_row(
+            "TEMPERATURE",
+            3000,
+            10000,
+            6500,
+            "K",
+        )
+
+        self.brightness_slider.valueChanged.connect(self.on_slider_changed)
+        self.contrast_slider.valueChanged.connect(self.on_slider_changed)
+        self.temperature_slider.valueChanged.connect(self.on_slider_changed)
+
+        self.curve = CurveWidget(self.gamma_controller)
+
+        curve_note = QLabel(
+            "Gamma curve preview. Temperature: 4500K warm, 6500K neutral, 9000K cold."
+        )
+        curve_note.setObjectName("Hint")
+        curve_note.setWordWrap(True)
+
+        self.support_button = QPushButton("Мне на чай")
+        self.support_button.setObjectName("SupportButton")
+        self.support_button.setMinimumHeight(34)
+        self.support_button.clicked.connect(self.open_support_link)
+
+        self.second_link_button = QPushButton("На кофе")
+        self.second_link_button.setObjectName("SupportButton")
+        self.second_link_button.setMinimumHeight(34)
+        self.second_link_button.clicked.connect(self.open_second_link)
+
+        advanced_layout.addWidget(self.brightness_row)
+        advanced_layout.addWidget(self.contrast_row)
+        advanced_layout.addWidget(self.temperature_row)
+
+        self.close_on_x_checkbox = QCheckBox("Не скрывать в трей")
+        self.close_on_x_checkbox.setChecked(
+            bool(self.config.get("settings", {}).get("close_on_x", False))
+        )
+        self.close_on_x_checkbox.stateChanged.connect(self.on_close_on_x_changed)
+
+        advanced_layout.addWidget(self.close_on_x_checkbox)
+
+        advanced_layout.addWidget(self.curve)
+        advanced_layout.addStretch()
+
+        support_buttons_layout = QHBoxLayout()
+        support_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        support_buttons_layout.setSpacing(10)
+
+        support_buttons_layout.addWidget(self.support_button)
+        support_buttons_layout.addWidget(self.second_link_button)
+
+        advanced_layout.addLayout(support_buttons_layout)
+
+        advanced_outer_layout.addWidget(advanced_card)
+
+        main_layout.addWidget(self.advanced_panel)
+
+    def build_tray(self):
+        self.tray = QSystemTrayIcon(self)
+
+        icon_path = resource_path(ICON_FILE)
+
+        if icon_path.exists():
+            self.tray.setIcon(QIcon(str(icon_path)))
+        else:
+            self.tray.setIcon(self.style().standardIcon(self.style().SP_ComputerIcon))
+
+        menu = QMenu()
+
+        show_action = menu.addAction("Show")
+        show_action.triggered.connect(self.show_window)
+
+        reset_action = menu.addAction("Reset")
+        reset_action.triggered.connect(self.reset_all)
+
+        menu.addSeparator()
+
+        quit_action = menu.addAction("Quit")
+        quit_action.triggered.connect(self.quit_app)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self.on_tray_activated)
+        self.tray.show()
+
+    def on_tray_activated(self, reason):
+
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_window()
+
+    def show_window(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def bind_hotkeys(self):
+        self.hotkey_manager.nextPreset.connect(self.next_preset)
+        self.hotkey_manager.prevPreset.connect(self.prev_preset)
+        self.hotkey_manager.resetRequested.connect(self.reset_all)
+        self.hotkey_manager.catVisionRequested.connect(self.toggle_cat_vision)
+        self.hotkey_manager.presetRequested.connect(self.apply_preset_by_index)
+        self.hotkey_manager.error.connect(self.set_status)
+
+        self.hotkey_manager.register(self.config)
+
+    def values_from_ui(self) -> tuple[float, float, float, int]:
+        brightness = self.brightness_slider.value() / 100.0
+        contrast = self.contrast_slider.value() / 100.0
+        gamma = self.gamma_slider.value() / 100.0
+        temperature = self.temperature_slider.value()
+
+        return brightness, contrast, gamma, temperature
+
+    def set_ui_values(
+        self,
+        brightness: float,
+        contrast: float,
+        gamma: float,
+        temperature: int,
+        apply_now: bool = True,
+        save: bool = True,
+    ):
+        brightness = clamp(brightness, 0.5, 2.0)
+        contrast = clamp(contrast, 0.3, 2.0)
+        gamma = clamp(gamma, 0.5, 2.5)
+        temperature = int(clamp(temperature, 3000, 10000))
+
+        sliders = (
+            self.brightness_slider,
+            self.contrast_slider,
+            self.gamma_slider,
+            self.temperature_slider,
+        )
+
+        for slider in sliders:
+            slider.blockSignals(True)
+
+        self.brightness_slider.setValue(int(round(brightness * 100)))
+        self.contrast_slider.setValue(int(round(contrast * 100)))
+        self.gamma_slider.setValue(int(round(gamma * 100)))
+        self.temperature_slider.setValue(int(temperature))
+
+        for slider in sliders:
+            slider.blockSignals(False)
+
+        self.update_value_labels()
+
+        if apply_now:
+            self.apply_values(brightness, contrast, gamma, temperature, save=save)
+
+    def update_value_labels(self):
+        brightness, contrast, gamma, temperature = self.values_from_ui()
+
+        self.brightness_value.setText(f"{int(round(brightness * 100))}%")
+        self.contrast_value.setText(f"{int(round(contrast * 100))}%")
+        self.gamma_value.setText(f"{int(round(gamma * 100))}%")
+        self.temperature_value.setText(f"{int(temperature)}K")
+
+        self.curve.set_values(brightness, contrast, gamma, temperature)
+
+    def on_slider_changed(self):
+        self.update_value_labels()
+
+        brightness, contrast, gamma, temperature = self.values_from_ui()
+        self.apply_values(brightness, contrast, gamma, temperature, save=True)
+
+    def apply_values(
+        self,
+        brightness: float,
+        contrast: float,
+        gamma: float,
+        temperature: int,
+        save: bool = True,
+    ):
+        ok = self.gamma_controller.apply(brightness, contrast, gamma, temperature)
+
+        if save:
+            self.config["settings"]["current"] = {
+                "brightness": round(brightness, 4),
+                "contrast": round(contrast, 4),
+                "gamma": round(gamma, 4),
+                "temperature": int(temperature),
+            }
+            save_config(self.config)
+
+        if not ok:
+            self.set_status("Gamma API error. Try running as administrator.")
+
+
+    def refresh_preset_combo(self):
+        if not hasattr(self, "preset_combo"):
+            return
+
+        current_index = self.preset_combo.currentIndex()
+
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+
+        for preset in self.config["presets"]:
+            name = preset.get("name", "Unnamed")
+            hotkey = preset.get("hotkey", "")
+
+            if hotkey:
+                self.preset_combo.addItem(f"{name}  [{hotkey}]")
+            else:
+                self.preset_combo.addItem(name)
+
+        if self.preset_combo.count() > 0:
+            safe_index = max(0, min(current_index, self.preset_combo.count() - 1))
+            self.preset_combo.setCurrentIndex(safe_index)
+
+        self.preset_combo.blockSignals(False)
+
+    def on_preset_selected(self, index: int):
+        if index < 0:
+            return
+
+        self.apply_preset_by_index(index)
+
+    def apply_preset_by_index(self, index: int):
+        presets = self.config["presets"]
+
+        if not presets:
+            return
+
+        if index < 0 or index >= len(presets):
+            return
+
+        self.current_preset_index = index
+
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentIndex(index)
+        self.preset_combo.blockSignals(False)
+
+        preset = presets[index]
+
+        self.animate_to(
+            preset.get("brightness", 1.0),
+            preset.get("contrast", 1.0),
+            preset.get("gamma", 1.0),
+            preset.get("temperature", 6500),
+            duration_ms=700,
+            save_at_end=True,
+        )
+
+        self.set_status(f"Preset: {preset.get('name', 'Unnamed')}")
+
+    def next_preset(self):
+        presets = self.config["presets"]
+
+        if not presets:
+            return
+
+        self.current_preset_index += 1
+
+        if self.current_preset_index >= len(presets):
+            self.current_preset_index = 0
+
+        self.apply_preset_by_index(self.current_preset_index)
+
+    def prev_preset(self):
+        presets = self.config["presets"]
+
+        if not presets:
+            return
+
+        self.current_preset_index -= 1
+
+        if self.current_preset_index < 0:
+            self.current_preset_index = len(presets) - 1
+
+        self.apply_preset_by_index(self.current_preset_index)
+
+    def save_as_preset(self):
+        name, ok = QInputDialog.getText(
+            self,
+            "Save preset",
+            "Preset name:",
+        )
+
+        if not ok:
+            return
+
+        name = name.strip()
+
+        if not name:
+            return
+
+        brightness, contrast, gamma, temperature = self.values_from_ui()
+
+        preset = {
+            "name": name,
+            "brightness": round(brightness, 4),
+            "contrast": round(contrast, 4),
+            "gamma": round(gamma, 4),
+            "temperature": int(temperature),
+            "hotkey": "",
+        }
+
+        self.config["presets"].append(preset)
+        save_config(self.config)
+
+        self.refresh_preset_combo()
+        self.preset_combo.setCurrentIndex(len(self.config["presets"]) - 1)
+
+        self.hotkey_manager.register(self.config)
+        self.set_status(f"Saved preset: {name}")
+
+    def delete_current_preset(self):
+        index = self.preset_combo.currentIndex()
+
+        if index < 0 or index >= len(self.config["presets"]):
+            return
+
+        if len(self.config["presets"]) <= 1:
+            QMessageBox.warning(self, "Cannot delete", "You cannot delete the last preset.")
+            return
+
+        name = self.config["presets"][index].get("name", "Unnamed")
+
+        answer = QMessageBox.question(
+            self,
+            "Delete preset",
+            f"Delete preset '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if answer != QMessageBox.Yes:
+            return
+
+        del self.config["presets"][index]
+
+        self.current_preset_index = max(
+            0,
+            min(index, len(self.config["presets"]) - 1),
+        )
+
+        save_config(self.config)
+
+        self.refresh_preset_combo()
+        self.preset_combo.setCurrentIndex(self.current_preset_index)
+
+        self.hotkey_manager.register(self.config)
+        self.set_status(f"Deleted preset: {name}")
+
+    def set_current_preset_hotkey(self):
+        index = self.preset_combo.currentIndex()
+
+        if index < 0 or index >= len(self.config["presets"]):
+            return
+
+        preset = self.config["presets"][index]
+
+        hotkey, ok = QInputDialog.getText(
+            self,
+            "Preset hotkey",
+            f"Hotkey for '{preset.get('name', 'Unnamed')}':\nExample: ctrl+alt+1",
+            text=preset.get("hotkey", ""),
+        )
+
+        if not ok:
+            return
+
+        preset["hotkey"] = hotkey.strip()
+
+        save_config(self.config)
+        self.refresh_preset_combo()
+        self.preset_combo.setCurrentIndex(index)
+
+        self.hotkey_manager.register(self.config)
+        self.set_status("Preset hotkey saved")
+
+    def toggle_advanced(self):
+        if self.advanced_open:
+            self.close_advanced()
+        else:
+            self.open_advanced()
+
+    def open_advanced(self):
+        if self.advanced_open:
+            return
+
+        self.advanced_open = True
+        self.advanced_button.setText("HIDE ADVANCED")
+
+        self.animate_window_geometry(self.expanded_size.width(), 260)
+
+        self.animate_advanced_width(
+            self.advanced_panel.maximumWidth(),
+            self.advanced_width,
+        )
+
+    def close_advanced(self):
+        if not self.advanced_open:
+            return
+
+        self.advanced_open = False
+        self.advanced_button.setText("ADVANCED")
+
+        self.animate_advanced_width(
+            self.advanced_panel.maximumWidth(),
+            0,
+        )
+
+        self.animate_window_geometry(self.compact_size.width(), 260)
+
+    def animate_advanced_width(self, start: int, end: int):
+        if self.advanced_animation:
+            self.advanced_animation.stop()
+
+        self.advanced_animation = QPropertyAnimation(
+            self.advanced_panel,
+            b"maximumWidth",
+            self,
+        )
+        self.advanced_animation.setDuration(260)
+        self.advanced_animation.setStartValue(start)
+        self.advanced_animation.setEndValue(end)
+        self.advanced_animation.setEasingCurve(QEasingCurve.OutCubic)
+
+        if end == 0:
+            self.advanced_animation.finished.connect(self.after_advanced_closed)
+
+        self.advanced_animation.start()
+
+    def after_advanced_closed(self):
+        self.setMinimumSize(self.compact_size)
+
+    def edit_global_hotkeys(self):
+        hotkeys = self.config["settings"].get("hotkeys", {})
+        dialog = HotkeySettingsDialog(hotkeys, self)
+
+        if dialog.exec_() == QDialog.Accepted:
+            self.config["settings"]["hotkeys"] = dialog.result_hotkeys()
+            save_config(self.config)
+            self.hotkey_manager.register(self.config)
+            self.set_status("Global hotkeys updated")
+
+    def open_support_link(self):
+        QDesktopServices.openUrl(QUrl(SUPPORT_URL))
+
+    def open_second_link(self):
+        QDesktopServices.openUrl(QUrl(SECOND_URL))
+
+    def reset_all(self):
+        self.cat_active = False
+        self.cat_timer.stop()
+        self.cat_previous_values = None
+
+        self.animate_to(
+            1.0,
+            1.0,
+            1.0,
+            6500,
+            duration_ms=450,
+            save_at_end=True,
+        )
+
+        self.set_status("Reset")
+
+    def toggle_cat_vision(self):
+        if self.cat_active:
+            self.stop_cat_vision()
+            return
+
+        self.cat_active = True
+        self.cat_previous_values = self.values_from_ui()
+
+        brightness, contrast, gamma, temperature = self.values_from_ui()
+
+   
+        cat_gamma = 2.2
+
+        self.animate_to(
+            brightness,
+            contrast,
+            cat_gamma,
+            temperature,
+            duration_ms=350,
+            save_at_end=False,
+    )
+
+
+    def stop_cat_vision(self):
+        if not self.cat_active:
+            return
+
+        self.cat_active = False
+
+        if self.cat_previous_values:
+            brightness, contrast, gamma, temperature = self.cat_previous_values
+
+            self.animate_to(
+                brightness,
+                contrast,
+                gamma,
+                temperature,
+                duration_ms=450,
+                save_at_end=False,
+            )
+
+        self.cat_previous_values = None
+        self.set_status("Cat Vision: OFF")
+
+
+    def animate_to(
+        self,
+        brightness: float,
+        contrast: float,
+        gamma: float,
+        temperature: int,
+        duration_ms: int = 700,
+        save_at_end: bool = True,
+    ):
+        start_brightness, start_contrast, start_gamma, start_temperature = self.values_from_ui()
+
+        self.animation_data = {
+            "start_time": time.perf_counter(),
+            "duration": max(100, duration_ms) / 1000.0,
+            "start": (
+                start_brightness,
+                start_contrast,
+                start_gamma,
+                start_temperature,
+            ),
+            "end": (
+                clamp(brightness, 0.5, 2.0),
+                clamp(contrast, 0.3, 2.0),
+                clamp(gamma, 0.5, 2.5),
+                int(clamp(temperature, 3000, 10000)),
+            ),
+            "save_at_end": save_at_end,
+        }
+
+        self.gamma_animation_timer.start(16)
+
+    def animation_step(self):
+        if not self.animation_data:
+            self.gamma_animation_timer.stop()
+            return
+
+        elapsed = time.perf_counter() - self.animation_data["start_time"]
+        duration = self.animation_data["duration"]
+
+        progress = clamp(elapsed / duration, 0.0, 1.0)
+
+        # Smoothstep easing
+        eased = progress * progress * (3 - 2 * progress)
+
+        start_b, start_c, start_g, start_t = self.animation_data["start"]
+        end_b, end_c, end_g, end_t = self.animation_data["end"]
+
+        brightness = start_b + (end_b - start_b) * eased
+        contrast = start_c + (end_c - start_c) * eased
+        gamma = start_g + (end_g - start_g) * eased
+        temperature = int(start_t + (end_t - start_t) * eased)
+
+        self.set_ui_values(
+            brightness,
+            contrast,
+            gamma,
+            temperature,
+            apply_now=True,
+            save=False,
+        )
+
+        if progress >= 1.0:
+            self.gamma_animation_timer.stop()
+
+            save_at_end = bool(self.animation_data.get("save_at_end", True))
+
+            self.set_ui_values(
+                end_b,
+                end_c,
+                end_g,
+                int(end_t),
+                apply_now=True,
+                save=save_at_end,
+            )
+
+            self.animation_data = None
+
+
+    def set_status(self, text: str):
+        self.status_label.setText(text)
+
+    def on_close_on_x_changed(self, state):
+        self.config["settings"]["close_on_x"] = state == Qt.Checked
+        save_config(self.config)
+
+        if state == Qt.Checked:
+            self.set_status("Крестик: закрытие приложения")
+        else:
+            self.set_status("Крестик: скрытие в трей")
+
+    def closeEvent(self, event):
+        if self.is_quitting:
+            event.accept()
+            return
+
+        close_on_x = bool(self.config.get("settings", {}).get("close_on_x", False))
+
+        if close_on_x:
+            event.accept()
+            self.quit_app()
+            return
+
+        event.ignore()
+        self.hide()
+
+    def quit_app(self):
+        self.is_quitting = True
+
+        try:
+            self.hotkey_manager.clear()
+        except Exception:
+            pass
+
+        try:
+            self.gamma_controller.reset()
+        except Exception:
+            pass
+
+        QApplication.quit()
+
+APP_STYLESHEET = """
+QWidget#Root {
+    background: #000000;
+    color: #F0E6D2;
+    font-family: Inter, Roboto, Segoe UI, Arial;
+    font-size: 13px;
+}
+
+QDialog {
+    background: #000000;
+    color: #F0E6D2;
+    font-family: Inter, Roboto, Segoe UI, Arial;
+}
+
+QLabel {
+    color: #F0E6D2;
+}
+
+QLabel#AppTitle {
+    color: #E8D5B7;
+    font-size: 25px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
+QLabel#Subtitle {
+    color: #A89B82;
+    font-size: 12px;
+}
+
+QLabel#Status {
+    color: #E8D5B7;
+    font-size: 11px;
+    padding-top: 2px;
+}
+
+QLabel#FallbackIcon {
+    color: #E8D5B7;
+    font-size: 72px;
+}
+
+QLabel#SectionTitle {
+    color: #E8D5B7;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+}
+
+QLabel#SliderTitle {
+    color: #D6C6A8;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1.4px;
+}
+
+QLabel#ValuePill {
+    background: #1A1A1A;
+    color: #E8D5B7;
+    border: 1px solid #4A4035;
+    border-radius: 12px;
+    padding: 4px 10px;
+    font-weight: 700;
+}
+
+QLabel#Hint {
+    color: #8C8270;
+    font-size: 11px;
+    line-height: 1.3;
+}
+
+QLabel#DialogTitle {
+    color: #E8D5B7;
+    font-size: 18px;
+    font-weight: 800;
+}
+
+QFrame#Card {
+    background: #0D0D0D;
+    border: 1px solid #2A2520;
+    border-radius: 22px;
+}
+
+QSlider::groove:horizontal {
+    height: 8px;
+    border-radius: 4px;
+    background: #1F1C18;
+}
+
+QSlider::sub-page:horizontal {
+    background: #E8D5B7;
+    border-radius: 4px;
+}
+
+QSlider::add-page:horizontal {
+    background: #1F1C18;
+    border-radius: 4px;
+}
+
+QSlider::handle:horizontal {
+    width: 22px;
+    height: 22px;
+    margin: -8px 0;
+    border-radius: 11px;
+    background: #F5E6CC;
+    border: 2px solid #E8D5B7;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #FFFFFF;
+    border: 2px solid #E8D5B7;
+}
+
+QPushButton {
+    background: #141414;
+    color: #F0E6D2;
+    border: 1px solid #3A322A;
+    border-radius: 14px;
+    padding: 8px 12px;
+    min-height: 24px;
+    font-weight: 700;
+}
+
+QPushButton:hover {
+    background: #1F1C18;
+    border: 1px solid #E8D5B7;
+}
+
+QPushButton:pressed {
+    background: #2A2520;
+}
+
+QPushButton#PrimaryButton {
+    background: #E8D5B7;
+    color: #0A0A0A;
+    border: 1px solid #E8D5B7;
+}
+
+QPushButton#PrimaryButton:hover {
+    background: #F5E6CC;
+}
+
+QPushButton#FlatButton {
+    background: transparent;
+    color: #E8D5B7;
+    border: 1px solid #3A322A;
+}
+
+QPushButton#SupportButton {
+    background: transparent;
+    color: #E8D5B7;
+    border: 1px solid #4A4035;
+    border-radius: 12px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+QPushButton#SupportButton:hover {
+    background: #1F1C18;
+    border: 1px solid #E8D5B7;
+}
+
+QComboBox {
+    background: #121212;
+    color: #F0E6D2;
+    border: 1px solid #3A322A;
+    border-radius: 14px;
+    padding: 8px 12px;
+    min-height: 24px;
+}
+
+QCheckBox {
+    color: #A89B82;
+    font-size: 12px;
+    spacing: 8px;
+    padding: 4px 2px;
+}
+
+QCheckBox:hover {
+    color: #E8D5B7;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border: 1px solid #4A4035;
+    background: #121212;
+}
+
+QCheckBox::indicator:checked {
+    background: #E8D5B7;
+    border: 1px solid #E8D5B7;
+}
+
+QComboBox:hover {
+    border: 1px solid #E8D5B7;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 28px;
+}
+
+QComboBox QAbstractItemView {
+    background: #121212;
+    color: #F0E6D2;
+    selection-background-color: #E8D5B7;
+    selection-color: #0A0A0A;
+    border: 1px solid #3A322A;
+}
+
+QLineEdit {
+    background: #121212;
+    color: #F0E6D2;
+    border: 1px solid #3A322A;
+    border-radius: 12px;
+    padding: 9px 10px;
+}
+
+QLineEdit:focus {
+    border: 1px solid #E8D5B7;
+}
+"""
+
+def main():
+    if sys.platform != "win32":
+        print("This application works only on Windows.")
+        return
+    
+    if is_another_instance_running():
+        return
+    
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+
+    icon_path = resource_path(ICON_FILE)
+
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    window = MainWindow()
+    window.show()
+
+    code = app.exec_()
+
+    try:
+        window.hotkey_manager.clear()
+    except Exception:
+        pass
+
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
